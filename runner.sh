@@ -1,0 +1,1 @@
+streamlit run ./doc_finder.py
