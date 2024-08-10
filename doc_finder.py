@@ -13,10 +13,10 @@ import chromadb
 
 load_dotenv()
 
+
 # https://diptimanrc.medium.com/rapid-q-a-on-multiple-pdfs-using-langchain-and-chromadb-as-local-disk-vector-store-60678328c0df
-def load_chunk_persist_pdf() -> Chroma:
+def load_hardcoded_pdf(pdf_folder_path) -> Chroma:
     # pdf_folder_path = "./consent_forms_cleaned"
-    pdf_folder_path = "./data"
     documents = []
     for file in os.listdir(pdf_folder_path):
         if file.endswith('.pdf'):
@@ -39,6 +39,19 @@ def load_chunk_persist_pdf() -> Chroma:
     return vectordb
 
 
+def get_current_vector_db() -> Chroma:
+    vector_store = Chroma(
+        embedding_function=OpenAIEmbeddings(),
+        persist_directory="./chroma_store/"
+    )
+    return vector_store
+
+
+def save_file_on_disk(bytes_data, file_path):
+    with open(file_path, 'wb') as f:  # Open file in binary write mode
+        f.write(bytes_data)
+
+
 def create_agent_chain():
     model_name = "gpt-3.5-turbo"
     llm = ChatOpenAI(model_name=model_name)
@@ -46,8 +59,24 @@ def create_agent_chain():
     return chain
 
 
-def get_llm_response(query):
-    vectordb = load_chunk_persist_pdf()
+def get_llm_response_for_hardcoded_files(query):
+    vectordb = load_hardcoded_pdf("./data")
+    chain = create_agent_chain()
+    matching_docs = vectordb.similarity_search(query)
+    answer = chain.run(input_documents=matching_docs, question=query)
+    return answer
+
+
+def get_llm_response_for_attached_files(files, query):
+    if (st.session_state.files_list):
+        print("Reusing existing embeddings")
+        vectordb = get_current_vector_db()
+    else:
+        print("Calculating new embeddings")
+        for file in files:
+            save_file_on_disk(file.read(), "./tmp/" + file.name)
+            st.session_state.files_list.append(file.name)
+        vectordb = load_hardcoded_pdf("./tmp")
     chain = create_agent_chain()
     matching_docs = vectordb.similarity_search(query)
     answer = chain.run(input_documents=matching_docs, question=query)
@@ -56,11 +85,28 @@ def get_llm_response(query):
 
 # Streamlit UI
 # ===============
-st.set_page_config(page_title="Doc Searcher", page_icon=":robot:")
-st.header("Query PDF Source")
+st.title("📝 File Q&A")
 
-form_input = st.text_input('Enter Query')
-submit = st.button("Generate")
+if 'files_list' not in st.session_state:
+    st.session_state.files_list = []
 
-if submit:
-    st.write(get_llm_response(form_input))
+if not st.session_state.files_list:
+    uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
+else:
+    uploaded_files = st.session_state.files_list
+    for file_name in st.session_state.files_list:
+        st.caption("📒 file: " + file_name)
+
+st.caption("🚀 A Streamlit chatbot powered by OpenAI")
+if "messages" not in st.session_state:
+    st.session_state["messages"] = [{"role": "assistant", "content": "How can I help you with your files?"}]
+
+for msg in st.session_state.messages:
+    st.chat_message(msg["role"]).write(msg["content"])
+
+if prompt := st.chat_input("Ask something about the files", disabled=not uploaded_files):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.chat_message("user").write(prompt)
+    response = get_llm_response_for_attached_files(uploaded_files, prompt)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    st.chat_message("assistant").write(response)
